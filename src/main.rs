@@ -20,6 +20,8 @@ use actix_web::{web, App, HttpServer, Responder, client::Client, http::StatusCod
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
 use serde::Deserialize;
 use anyhow::{Result,Context,anyhow};
+use env_logger::Env;
+use log::{info, error, debug, warn};
 
 //They are not rly a secret
 const DEFAULT_PORT:u16 = 3444;
@@ -137,7 +139,7 @@ struct Image {
 }
 
 async fn mysql(shard: &Shard,mysql_hostname: &String,mysql_port: &u16,mysql_user: &String,mysql_pass: &String,mysql_db: &String) -> Result<()> {
-    println!("Connecting to mysql {}:{}",mysql_hostname,mysql_port);
+    info!("Connecting to mysql {}:{}",mysql_hostname,mysql_port);
 
     let mut lastid:usize = 0;
 
@@ -194,7 +196,7 @@ async fn request(info: web::Query<Info>, body: bytes::Bytes, http: web::Data<Mut
         let bodystr = std::str::from_utf8(&body)?;
 
         if info.github {
-            println!("Handling web hook");
+            debug!("Handling web hook");
             let github:Github = serde_json::from_str(&bodystr)?;
 
             //It's api so it won't break too
@@ -225,7 +227,7 @@ async fn request(info: web::Query<Info>, body: bytes::Bytes, http: web::Data<Mut
         match web::Query::<Body>::from_query(&bodystr) {
             Ok(qsl) => {
                 if qsl.activity.len() > 0 {
-                    println!("Activity updated to {}",qsl.activity);
+                    debug!("Activity updated to {}",qsl.activity);
         
                     let mut activity = ACTIVITY_TEMPLATE.clone();
                     activity.name = qsl.activity.clone();
@@ -238,19 +240,19 @@ async fn request(info: web::Query<Info>, body: bytes::Bytes, http: web::Data<Mut
                     return format!("Content size is invalid").with_status(StatusCode::INTERNAL_SERVER_ERROR);
                 }
         
-                println!("Forwarding message: {}",content);
+                debug!("Forwarding message: {}",content);
         
                 &http.create_message(ChannelId(qsl.channelID)).content(content)?.await?;
         
                 format!("Successfully passed message").with_status(StatusCode::OK)
             }
-            Err(err) => {println!("QSL Parse: {}",err); return format!("Internal error").with_status(StatusCode::INTERNAL_SERVER_ERROR) }
+            Err(err) => {error!("QSL Parse: {}",err); return format!("Internal error").with_status(StatusCode::INTERNAL_SERVER_ERROR) }
         }
     };
 
     match result {
         Ok(a) => a,
-        Err(err) => {println!("Web request error: {}",err); format!("Internal error").with_status(StatusCode::INTERNAL_SERVER_ERROR ) },
+        Err(err) => {error!("Web request error: {}",err); format!("Internal error").with_status(StatusCode::INTERNAL_SERVER_ERROR ) },
     }
 }
 
@@ -260,7 +262,7 @@ async fn web(shard: &Shard, http: &HttpClient, hostname: &String, port: &u16, in
     builder.set_private_key_file(web_keypath, SslFiletype::PEM)?;
     builder.set_certificate_chain_file(web_chainpath)?;
 
-    println!("Running web thread {}:{}", &hostname, &port);
+    info!("Running web thread {}:{}", &hostname, &port);
     let data = web::Data::new(Mutex::new(BotData{shard:shard.clone(),http:http.clone(),token:internal_token.clone()}));
     
     HttpServer::new(move || {
@@ -279,6 +281,8 @@ fn get_avatar_url(user_id: UserId, avatar_hash: impl Into<String>) -> String {
 
 #[actix_rt::main]
 async fn main() -> Result<()> {
+    // Default log level is debug
+    env_logger::from_env(Env::default().default_filter_or("debug")).init();
 
     let five_secs = Duration::new(5, 0);
 
@@ -294,7 +298,7 @@ async fn main() -> Result<()> {
     actix_rt::spawn(async move {
         loop {
             mysql(&shard1,&config1.mysql_hostname,&config1.mysql_port,&config1.mysql_user,&config1.mysql_password,&config1.mysql_dbname).await
-            .map_err(|e|println!("Actvity task died: {}",e))
+            .map_err(|e|error!("Actvity task died: {}",e))
             .ok();
             actix_rt::time::delay_for(five_secs).await
         };
@@ -305,7 +309,7 @@ async fn main() -> Result<()> {
     actix_rt::spawn(async move {
         loop {
             web(&shard2,&http1,&config.web_hostname,&config.web_port,&config.botapi_token,&config.web_sslkey,&config.web_chain).await
-            .map_err(|e|println!("Web task died: {}",e))
+            .map_err(|e|error!("Web task died: {}",e))
             .ok();
             actix_rt::time::delay_for(five_secs).await
         }
@@ -328,7 +332,7 @@ async fn main() -> Result<()> {
         let result: Result<_> = try {
             match &event {
                 Event::Ready(ready) => {
-                    println!("User '{}' is ready",ready.user.name);
+                    debug!("User '{}' is ready",ready.user.name);
                 }
                 Event::MessageCreate(msg) => {
                     if &msg.channel_id==&CID_LOG {continue}
@@ -343,15 +347,15 @@ async fn main() -> Result<()> {
                         match response.body().limit(MAXFILESIZE).await {
                             Ok(body) => {
                                 images.push(Image{name:attach.filename.to_owned(),body});
-                                println!("Caching attachment: {}", &attach.filename);
+                                debug!("Caching attachment: {}", &attach.filename);
                             },
-                            Err(c) => println!("Warning: Failed to fetch image: {}\n {}",&attach.proxy_url,c)
+                            Err(c) => warn!("Warning: Failed to fetch image: {}\n {}",&attach.proxy_url,c)
                         }
                 
                     }
                     if !images.is_empty() {
-                        if cattaches.len()>=cattaches.capacity() {println!("Stack is filled, draining first");cattaches.drain(0..1);}
-                        println!("Caching attachment {}/{}",cattaches.len(),cattaches.capacity());
+                        if cattaches.len()>=cattaches.capacity() {debug!("Stack is filled, draining first");cattaches.drain(0..1);}
+                        debug!("Caching attachment {}/{}",cattaches.len(),cattaches.capacity());
                         cattaches.push(ImagesData{id:msg.id,images});
                     }
                 }
@@ -386,7 +390,7 @@ async fn main() -> Result<()> {
                         }
                         _ => {}
                     }
-                    println!("Updated message logged {}",msg.id);
+                    debug!("Updated message logged {}",msg.id);
                 }
                 Event::MessageDelete(msg) => {
                     if msg.channel_id==CID_LOG {continue}
@@ -423,7 +427,7 @@ async fn main() -> Result<()> {
 
                                 for image in image.unwrap().images {
                                     let name = image.name.clone();
-                                    println!("Restoring attachment {}",name);
+                                    debug!("Restoring attachment {}",name);
                                     message = message.attachment(name,image.body.clone());
                                 }
                             
@@ -432,14 +436,14 @@ async fn main() -> Result<()> {
                         }
                         _ => {}
                     }
-                    println!("Deleted message logged {}",msg.id);
+                    debug!("Deleted message logged {}",msg.id);
                 }
                 _ => {}
             }
             cache.update(&event).await.expect("Cache failed, OhNoe"); 
         };
         match result {
-            Err(err) => println!("Discord events queue failed: {}",err),
+            Err(err) => error!("Discord events queue failed: {}",err),
             _ => {}
         };
     }
