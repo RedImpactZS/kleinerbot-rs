@@ -1,0 +1,16 @@
+botapi_token: local_api_token_here
+discord_token: discord_api_token_here
+
+#Local web api support
+web_enabled: true
+web_hostname: localhost
+web_port: 9999
+web_privkey: privkey.pem 
+web_cert: fullchain.pem 
+
+#MySQL support
+mysql_enabled: true
+mysql_hostname: localhost 
+mysql_user: root 
+mysql_password: password 
+mysql_dbname: dbname 
