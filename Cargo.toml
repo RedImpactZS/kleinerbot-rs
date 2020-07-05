@@ -8,7 +8,6 @@ edition = "2018"
 
 [profile.release]
 lto = true
-opt-level = "z"
 
 [dependencies]
 tokio = "0.2.21"
