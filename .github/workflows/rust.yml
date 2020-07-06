@@ -27,7 +27,6 @@ jobs:
           ${{ runner.os }}-cargo-
 
     - name: Install clippy and rustfmt
-      if: steps.cache.outputs.cache-hit != 'true'
       run: |
         rustup component add clippy
         rustup component add rustfmt
