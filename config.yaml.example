@@ -1,3 +1,4 @@
+messages_enabled: true
 botapi_token: local_api_token_here
 discord_token: discord_api_token_here
 
@@ -5,6 +6,7 @@ discord_token: discord_api_token_here
 web_enabled: true
 web_hostname: localhost
 web_port: 9999
+web_ssl: true
 web_privkey: privkey.pem 
 web_cert: fullchain.pem 
 

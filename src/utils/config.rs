@@ -2,6 +2,8 @@ use serde::Deserialize;
 #[derive(Deserialize, Debug, Clone)]
 pub struct Config {
     #[serde(default = "Config::default_yes")]
+    pub messages_enabled: bool,
+    #[serde(default = "Config::default_yes")]
     pub web_enabled: bool,
     #[serde(default = "Config::default_hostname")]
     pub web_hostname: String,
@@ -18,7 +20,11 @@ pub struct Config {
     pub mysql_user: String,
     pub mysql_password: String,
     pub mysql_dbname: String,
+    #[serde(default = "Config::default_yes")]
+    pub web_ssl: bool,
+    #[serde(default)]
     pub web_privkey: String,
+    #[serde(default)]
     pub web_cert: String,
 }
 

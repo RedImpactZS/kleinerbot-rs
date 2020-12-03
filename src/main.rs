@@ -8,7 +8,7 @@ mod web;
 
 use anyhow::{Context, Result};
 use env_logger::Env;
-use twilight::{gateway::Shard, http::Client as TwilightHttp};
+use twilight_gateway::{Intents, Shard};
 
 use std::env;
 use std::fs::File;
@@ -18,12 +18,14 @@ mod utils {
     pub mod config;
 }
 
+use actix_rt::signal::ctrl_c;
+
 use crate::utils::config::Config;
 
 #[actix_rt::main]
 async fn main() -> Result<()> {
     // Default log level is debug
-    env_logger::from_env(Env::default().default_filter_or("debug")).init();
+    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
     let path = env::args().nth(1).unwrap_or("config.yaml".to_string());
 
@@ -32,20 +34,24 @@ async fn main() -> Result<()> {
 
     let config: Config = serde_yaml::from_reader(reader).context("Config file read failure")?;
 
-    let mut shard = Shard::new(&config.discord_token);
+    let intents = Intents::GUILDS | Intents::GUILD_MESSAGES | Intents::GUILD_MEMBERS | Intents::GUILD_VOICE_STATES;
+
+    let mut shard = Shard::new(&config.discord_token, intents);
     shard.start().await?;
 
-    let http = TwilightHttp::new(&config.discord_token);
-
     if config.web_enabled {
-        web::spawn(&http, config.clone()).await?;
+        web::spawn(config.clone()).await?;
     }
 
     if config.mysql_enabled {
         mysql::spawn(&shard, config.clone()).await?;
     }
 
-    messages::event_hanler(&shard, &http).await?;
+    if config.messages_enabled {
+        messages::spawn(&shard, config.clone()).await?;
+    }
+
+    ctrl_c().await?;
 
     Ok(())
 }

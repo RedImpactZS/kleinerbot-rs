@@ -1,15 +1,12 @@
 use anyhow::Result;
 use core::time::Duration;
-use log::info;
-use twilight::{
-    gateway::Shard,
-    model::gateway::{
-        payload::UpdateStatus,
-        presence::{Activity, ActivityType, Status},
-    },
-};
+use log::{info, warn};
+use twilight_gateway::Shard;
+use twilight_model::gateway::{payload::UpdateStatus,presence::{Activity, ActivityType, Status}};
 
-use mysql_async::prelude::*;
+use sqlx::{Row, mysql::{MySqlConnectOptions, MySqlPool}};
+
+use actix_rt::Arbiter;
 
 use crate::utils::config::Config;
 
@@ -41,38 +38,31 @@ struct ServerData {
     map: String,
 }
 
-async fn task(shard: &Shard, opts: mysql_async::OptsBuilder) -> Result<()> {
+async fn task(shard: &Shard, opts: &MySqlConnectOptions) -> Result<()> {
     let mut lastid: usize = 0;
 
     let fifteen_secs = Duration::new(15, 0);
 
     loop {
-        let conn = mysql_async::Conn::new(opts.clone()).await?;
+        let pool = MySqlPool::connect_with(opts.clone()).await?;
 
-        let result = conn
-            .prep_exec(
-                "SELECT id,players,slots,map FROM `gex_servers` WHERE id < 100 ORDER BY id",
-                (),
-            )
-            .await?;
+        let query = sqlx::query("SELECT id,players,slots,map FROM `gex_servers` WHERE id < 100 ORDER BY id")
+        .fetch_all(&pool)
+        .await?;
 
-        let (conn, sdata) = result
-            .map_and_drop(|row| {
-                let (id, players, slots, map) = mysql_async::from_row(row);
-                ServerData {
-                    id,
-                    players,
-                    slots,
-                    map,
-                }
-            })
-            .await?;
-
-        conn.disconnect().await?;
+        let mut sdata = vec!();
+        for data in query.into_iter() {
+            sdata.push(ServerData {
+                id: data.try_get("id")?,
+                players: data.try_get("players")?,
+                slots: data.try_get("slots")?,
+                map: data.try_get("map")?,
+            });
+        }
 
         let data: &ServerData = &sdata[lastid];
         let mut mapname = data.map.clone();
-        mapname.truncate(16);
+        mapname.truncate(14);
 
         let mut activity = ACTIVITY_TEMPLATE.clone();
 
@@ -83,7 +73,7 @@ async fn task(shard: &Shard, opts: mysql_async::OptsBuilder) -> Result<()> {
         .to_owned();
 
         shard
-            .command(&UpdateStatus::new(false, activity, None, Status::Online))
+            .command(&UpdateStatus::new(vec!(activity), false, None, Status::Online))
             .await?;
 
         lastid += 1;
@@ -96,12 +86,13 @@ async fn task(shard: &Shard, opts: mysql_async::OptsBuilder) -> Result<()> {
 }
 
 pub async fn spawn(shard: &Shard, config: Config) -> Result<()> {
-    let mut opts = mysql_async::OptsBuilder::new();
-    opts.ip_or_hostname(&config.mysql_hostname)
-        .tcp_port(config.mysql_port.to_owned())
-        .user(Some(&config.mysql_user))
-        .pass(Some(&config.mysql_password))
-        .db_name(Some(&config.mysql_dbname));
+
+    let opts = MySqlConnectOptions::new()
+    .host(&config.mysql_hostname)
+    .port(config.mysql_port.to_owned())
+    .username(&config.mysql_user)
+    .password(&config.mysql_password)
+    .database(&config.mysql_dbname);
 
     info!(
         "Connecting to mysql {}:{}",
@@ -110,7 +101,13 @@ pub async fn spawn(shard: &Shard, config: Config) -> Result<()> {
 
     let shard1 = shard.clone();
 
-    actix_rt::spawn(async move { task(&shard1, opts).await.unwrap() });
+    Arbiter::spawn(async move {
+        loop {
+            task(&shard1, &opts)
+                .await
+                .unwrap_or_else(|err| warn!("MySQL task failed: {}", err));
+        }
+    });
 
     Ok(())
 }

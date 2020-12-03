@@ -1,10 +1,15 @@
 use actix_web::{http::StatusCode, web, App, HttpServer, Responder};
 use anyhow::{Context, Result};
-use log::{debug, error, info};
-use openssl::ssl::{SslAcceptor, SslAcceptorBuilder, SslFiletype, SslMethod};
+use log::{error, info, warn};
+use std::{fs::File, io::BufReader, error::Error};
+use rust_tls::internal::pemfile::{certs, rsa_private_keys};
+use rust_tls::{NoClientAuth, ServerConfig};
 use serde::Deserialize;
 use std::sync::Mutex;
-use twilight::{http::Client as TwilightHttp, model::id::ChannelId};
+use twilight_http::Client as TwilightHttp;
+use twilight_model::id::ChannelId;
+
+use actix_rt::Arbiter;
 
 use crate::utils::config::Config;
 
@@ -75,7 +80,7 @@ async fn request(
         let bodystr = std::str::from_utf8(&body)?;
 
         if info.github {
-            debug!("Handling web hook");
+            info!("Handling web hook");
             let github: Github = serde_json::from_str(&bodystr)?;
 
             //It's api so it won't break too
@@ -122,7 +127,7 @@ async fn request(
                         .with_status(StatusCode::INTERNAL_SERVER_ERROR);
                 }
 
-                debug!("Forwarding message: {}", content);
+                info!("Forwarding message: {}", content);
 
                 &http
                     .create_message(ChannelId(qsl.channelID))
@@ -147,35 +152,54 @@ async fn request(
     }
 }
 
-async fn task(
-    builder: SslAcceptorBuilder,
-    data: web::Data<Mutex<BotData>>,
-    addr: String,
-) -> Result<(), std::io::Error> {
-    HttpServer::new(move || {
-        App::new()
-            .app_data(data.clone())
-            .route("/*", web::post().to(request))
-    })
-    .bind_openssl(addr, builder)?
-    .run()
-    .await
-}
+async fn task(config: &Config) -> Result<(),Box<dyn Error>> {
+    let mut ssl_config = ServerConfig::new(NoClientAuth::new());
 
-pub async fn spawn(http: &TwilightHttp, config: Config) -> Result<()> {
-    let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls())?;
-    builder.set_private_key_file(config.web_privkey, SslFiletype::PEM)?;
-    builder.set_certificate_chain_file(config.web_cert)?;
+    let ssl = config.web_ssl;
+
+    if ssl {
+        let cert_file = &mut BufReader::new(File::open(&config.web_cert)?);
+        let key_file = &mut BufReader::new(File::open(&config.web_privkey)?);
+        let cert_chain = certs(cert_file).unwrap();
+        let mut keys = rsa_private_keys(key_file).unwrap();
+        ssl_config.set_single_cert(cert_chain, keys.remove(0))?;
+    
+    }
 
     let addr = format!("{}:{}", &config.web_hostname, &config.web_port);
 
     info!("Running web thread {}", addr);
     let data = web::Data::new(Mutex::new(BotData {
-        http: http.clone(),
+        http: TwilightHttp::new(&config.discord_token),
         token: config.botapi_token.clone(),
     }));
 
-    actix_rt::spawn(async move { task(builder, data, addr).await.unwrap() });
+    let mut server = HttpServer::new(move || {
+        App::new()
+            .app_data(data.clone())
+            .route("/*", web::post().to(request))
+    })
+    .disable_signals();
+
+    if ssl {
+        server = server.bind_rustls(addr, ssl_config)?;
+    } else {
+        server = server.bind(addr)?;
+    }
+
+    server.run().await?;
+
+    Ok(())
+}
+
+pub async fn spawn(config: Config) -> Result<()> {
+    Arbiter::spawn(async move {
+        loop {
+            task(&config)
+                .await
+                .unwrap_or_else(|err| warn!("Web task failed: {}", err));
+        }
+    });
 
     Ok(())
 }
